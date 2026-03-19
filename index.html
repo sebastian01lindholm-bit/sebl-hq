@@ -547,18 +547,105 @@ let editingId   = null;
 let editingType = 'tanke';
 let currentSection = 'jobb'; // 'jobb' or 'fritid'
 
+// Local fallback so data doesn't disappear on refresh when the
+// Google Sheets sync is temporarily failing (CORS / caching / long GET URLs).
+const LS_KEY = 'seblhq_v9_store';
+
+function normalizeEntry(e) {
+  const x = { ...e };
+  if (!Array.isArray(x.tags)) {
+    if (typeof x.tags === 'string') {
+      try { x.tags = JSON.parse(x.tags || '[]'); } catch { x.tags = []; }
+    } else {
+      x.tags = [];
+    }
+  }
+  if (x.image_url === undefined && x.imageUrl !== undefined) x.image_url = x.imageUrl;
+  if (x.title === undefined) x.title = '';
+  if (x.text === undefined) x.text = '';
+  if (x.type === undefined) x.type = 'tanke';
+  if (x.created_at === undefined) x.created_at = '';
+  if (x.updated_at === undefined) x.updated_at = x.created_at || '';
+  return x;
+}
+
+function normalizeEntries(arr) {
+  return (Array.isArray(arr) ? arr : []).map(normalizeEntry);
+}
+
+function loadFromLocal() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    entries = normalizeEntries(data.entries);
+    fritidEntries = normalizeEntries(data.fritidEntries);
+    journalData = (data.journalData && typeof data.journalData === 'object') ? data.journalData : {};
+    return true;
+  } catch (err) {
+    console.warn('loadFromLocal failed:', err);
+    return false;
+  }
+}
+
+function persistToLocal() {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({ entries, fritidEntries, journalData }));
+  } catch (err) {
+    // If storage quota is exceeded, we still keep in-memory state.
+    console.warn('persistToLocal failed:', err);
+  }
+}
+
+// Prefer API items when ids overlap, but keep local items the API doesn't return.
+function mergeById(apiArr, localArr) {
+  apiArr = Array.isArray(apiArr) ? apiArr : [];
+  localArr = Array.isArray(localArr) ? localArr : [];
+
+  // Start with API data, then let local “win” if it was edited more recently.
+  const resultMap = new Map(apiArr.map(e => [String(e.id), e]));
+  for (const l of localArr) {
+    const k = String(l.id);
+    const apiItem = resultMap.get(k);
+    if (!apiItem) {
+      resultMap.set(k, l);
+      continue;
+    }
+    const lu = String(l.updated_at || '');
+    const au = String(apiItem.updated_at || '');
+    if (lu && (!au || lu.localeCompare(au) > 0)) {
+      resultMap.set(k, l);
+    }
+  }
+
+  const merged = Array.from(resultMap.values());
+  merged.sort((a, b) => String((b.updated_at || b.created_at || '')).localeCompare(String((a.updated_at || a.created_at || ''))));
+  return merged;
+}
+
 // ── API ────────────────────────────────────────────────────────────
 async function api(params) {
-  const url = API + '?' + new URLSearchParams({...params, callback: 'cb'});
+  // Add cache-buster so the "get" action doesn't serve stale data.
+  const url = API + '?' + new URLSearchParams({ ...params, callback: 'cb', _ts: Date.now().toString() });
   const proxy = 'https://corsproxy.io/?' + encodeURIComponent(url);
   const r = await fetch(proxy);
   const text = await r.text();
-  const json = text.replace(/^cb\(/, '').replace(/\)$/, '');
-  return JSON.parse(json);
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/^cb\(/, '').replace(/\)\s*;?\s*$/, '');
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    throw new Error('Bad API response (first 300 chars): ' + text.trim().slice(0, 300));
+  }
 }
 
 // ── LOAD ──────────────────────────────────────────────────────────
 async function loadAll() {
+  // Keep local snapshot so we can merge if the API is incomplete.
+  const localEntries = entries;
+  const localFritidEntries = fritidEntries;
+  const localJournal = journalData;
+
   try {
     const [e, f, j, mb, mbImg, cs] = await Promise.all([
       api({ action: 'get', sheet: 'entries' }),
@@ -568,17 +655,28 @@ async function loadAll() {
       api({ action: 'get', sheet: 'moodboard' }),
       api({ action: 'get', sheet: 'case_studies' })
     ]);
-    entries = parseSheet(e.data, ['id','text','type','tags','created_at','title','image_url']);
-    entries.forEach(e => { try { e.tags = JSON.parse(e.tags||'[]'); } catch(x){ e.tags=[]; } });
-    fritidEntries = parseSheet(f.data, ['id','text','type','tags','created_at','title','image_url']);
-    fritidEntries.forEach(e => { try { e.tags = JSON.parse(e.tags||'[]'); } catch(x){ e.tags=[]; } });
-    journalData = {};
-    parseSheet(j.data, ['id','date','text']).forEach(r => { journalData[r.date] = r.text; });
+
+    const apiEntries = parseSheet(e.data, ['id','text','type','tags','created_at','title','image_url']);
+    apiEntries.forEach(e => { try { e.tags = JSON.parse(e.tags||'[]'); } catch(x){ e.tags=[]; } });
+
+    const apiFritidEntries = parseSheet(f.data, ['id','text','type','tags','created_at','title','image_url']);
+    apiFritidEntries.forEach(e => { try { e.tags = JSON.parse(e.tags||'[]'); } catch(x){ e.tags=[]; } });
+
+    const apiJournal = {};
+    parseSheet(j.data, ['id','date','text']).forEach(r => { apiJournal[r.date] = r.text; });
+
+    entries = mergeById(apiEntries, localEntries);
+    fritidEntries = mergeById(apiFritidEntries, localFritidEntries);
+    journalData = { ...localJournal, ...apiJournal };
+
+    // Other sections are still fully API-driven for now.
     moodboard = parseSheet(mb.data, ['id','name','image_data','created_at']);
     mbImages  = parseSheet(mbImg.data, ['id','board_id','image_data','caption','created_at']);
     caseStudies = parseSheet(cs.data, ['id','title','notes','image_data','created_at']);
+
     renderAll();
     updateCounts();
+    persistToLocal();
   } catch(err) {
     console.error('loadAll:', err);
     toast('Fel vid laddning: ' + err.message);
@@ -611,21 +709,33 @@ async function saveEntry(section) {
   const title   = $(titleEl).value.trim();
   const imgUrl  = driveUrl($(imgEl).value.trim());
 
+  // Optimistic local write so the entry won't disappear on refresh.
+  const id = Date.now().toString();
+  const created_at = new Date().toISOString();
+  const entry = { id, text, type, tags, created_at, updated_at: created_at, title, image_url: imgUrl };
+
   isSaving = true;
   const btn = $(btnEl); btn.disabled = true; btn.textContent = '…';
+  let apiOk = false;
   try {
-    const id = Date.now().toString();
-    const created_at = new Date().toISOString();
     const row = JSON.stringify([id, text, type, JSON.stringify(tags), created_at, title, imgUrl]);
     await api({ action: 'insert', sheet, row });
-    const entry = { id, text, type, tags, created_at, title, image_url: imgUrl };
-    if (isF) fritidEntries.unshift(entry);
-    else entries.unshift(entry);
-    $(textEl).value = ''; $(tagEl).value = ''; $(titleEl).value = ''; $(imgEl).value = '';
-    renderAll(); updateCounts(); toast('Sparat ✓');
-    $(textEl).focus();
-  } catch(err) { toast('Fel: ' + err.message); }
-  isSaving = false; btn.disabled = false; btn.textContent = 'Spara';
+    apiOk = true;
+  } catch(err) {
+    console.warn('saveEntry sync failed:', err);
+    toast('Sparat lokalt, men synk fel: ' + err.message);
+  } finally {
+    isSaving = false;
+    btn.disabled = false;
+    btn.textContent = 'Spara';
+  }
+
+  if (isF) fritidEntries.unshift(entry);
+  else entries.unshift(entry);
+  $(textEl).value = ''; $(tagEl).value = ''; $(titleEl).value = ''; $(imgEl).value = '';
+  renderAll(); updateCounts();
+  if (apiOk) toast('Sparat ✓');
+  $(textEl).focus();
 }
 
 async function deleteEntry(id, sheet) {
@@ -813,18 +923,39 @@ async function saveEdit() {
   const title  = $('editTitle').value.trim();
   const imgUrl = driveUrl($('editImgUrl').value.trim());
   const tags   = $('editTags').value.split(/[,]+/).map(t=>t.trim().toLowerCase()).filter(Boolean);
-  if (!text) return;
+
+  // Store values before closing modal (closeEditModal() clears editingId).
+  const idToUpdate = editingId;
+  const sheetToUpdate = editingSheet;
+  const typeToUpdate = editingType;
+
+  // Optimistic local update so saving always “works” visually.
+  const src = sheetToUpdate === 'fritid' ? fritidEntries : entries;
+  const i = src.findIndex(e => e.id == idToUpdate);
+  const created_at = i !== -1 ? src[i].created_at : new Date().toISOString();
+  const updated = { id: idToUpdate, text, type: typeToUpdate, tags, created_at, updated_at: new Date().toISOString(), title, image_url: imgUrl };
+  if (i !== -1) src[i] = updated;
+  else src.unshift(updated);
+
+  persistToLocal();
+  renderAll();
+  updateCounts();
+  closeEditModal();
+
+  let apiOk = false;
   try {
-    await api({ action:'update', sheet:editingSheet, id:editingId, col:2, val:text });
-    await api({ action:'update', sheet:editingSheet, id:editingId, col:3, val:editingType });
-    await api({ action:'update', sheet:editingSheet, id:editingId, col:4, val:JSON.stringify(tags) });
-    await api({ action:'update', sheet:editingSheet, id:editingId, col:6, val:title });
-    await api({ action:'update', sheet:editingSheet, id:editingId, col:7, val:imgUrl });
-    const src = editingSheet === 'fritid' ? fritidEntries : entries;
-    const i = src.findIndex(e => e.id == editingId);
-    if (i !== -1) src[i] = {...src[i], text, type:editingType, tags, title, image_url:imgUrl};
-    renderAll(); closeEditModal(); toast('Redigerat ✓');
-  } catch(err) { toast('Fel: '+err.message); }
+    await api({ action:'update', sheet:sheetToUpdate, id:idToUpdate, col:2, val:text });
+    await api({ action:'update', sheet:sheetToUpdate, id:idToUpdate, col:3, val:typeToUpdate });
+    await api({ action:'update', sheet:sheetToUpdate, id:idToUpdate, col:4, val:JSON.stringify(tags) });
+    await api({ action:'update', sheet:sheetToUpdate, id:idToUpdate, col:6, val:title });
+    await api({ action:'update', sheet:sheetToUpdate, id:idToUpdate, col:7, val:imgUrl });
+    apiOk = true;
+  } catch(err) {
+    console.warn('saveEdit sync failed:', err);
+    toast('Redigerat lokalt, men synk fel: ' + err.message);
+  }
+
+  if (apiOk) toast('Redigerat ✓');
 }
 
 $('editModal').addEventListener('click', function(e) { if (e.target===this) closeEditModal(); });
@@ -1033,6 +1164,9 @@ document.addEventListener('keydown', e => {
 });
 
 updateDate();
+loadFromLocal();
+renderAll();
+updateCounts();
 loadAll();
 </script>
 </body>
