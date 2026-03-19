@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Seb-L HQ</title>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Seb-L HQ">
@@ -519,6 +519,10 @@ kbd{background:var(--surface);border:1px solid var(--border);border-radius:3px;p
 <div class="toast" id="toast"></div>
 
 <script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const todayStr = () => new Date().toISOString().split('T')[0];
+
 const API = 'https://script.google.com/macros/s/AKfycbz1gZxIJBOG7zrleat2sR2fgNAxXG0F3ImtKG8Y5j-leF3nR8E6NjRETb7jJDZ8WYmg/exec';
 
 // ── STATE ─────────────────────────────────────────────────────────
@@ -1012,9 +1016,7 @@ function exportData() {
   a.download = 'sebl-hq-export-' + todayStr() + '.json'; a.click(); toast('Exporterad ✓');
 }
 
-const $        = id => document.getElementById(id);
-const esc      = s  => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-const todayStr = ()  => new Date().toISOString().split('T')[0];
+// utils moved to top
 
 function updateDate() {
   $('headerDate').textContent = new Date().toLocaleDateString('sv-SE',{weekday:'long',day:'numeric',month:'long'});
