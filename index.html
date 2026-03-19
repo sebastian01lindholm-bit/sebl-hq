@@ -757,6 +757,8 @@ async function saveEntry(section) {
 
   if (isF) fritidEntries.unshift(entry);
   else entries.unshift(entry);
+  // Persist immediately so refresh won't lose the locally created entry
+  persistToLocal();
   $(textEl).value = ''; $(tagEl).value = ''; $(titleEl).value = ''; $(imgEl).value = '';
   renderAll(); updateCounts();
   if (apiOk) toast('Sparat ✓');
@@ -769,6 +771,7 @@ async function deleteEntry(id, sheet) {
     await api({ action: 'delete', sheet, id });
     if (sheet === 'fritid') fritidEntries = fritidEntries.filter(e => e.id !== id);
     else entries = entries.filter(e => e.id !== id);
+    persistToLocal();
     renderAll(); updateCounts(); toast('Borttagen');
   } catch(err) { toast('Fel: ' + err.message); }
 }
