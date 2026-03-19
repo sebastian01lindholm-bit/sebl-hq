@@ -625,17 +625,42 @@ function mergeById(apiArr, localArr) {
 
 // ── API ────────────────────────────────────────────────────────────
 async function api(params) {
-  // Add cache-buster so the "get" action doesn't serve stale data.
-  const url = API + '?' + new URLSearchParams({ ...params, callback: 'cb', _ts: Date.now().toString() });
+  const wantsPost = ['insert', 'update', 'delete'].includes(params.action);
+  const ts = Date.now().toString();
+
+  // Common JSONP wrapper cleanup.
+  const parseText = (text) => {
+    let cleaned = String(text || '').trim();
+    cleaned = cleaned.replace(/^cb\(/, '').replace(/\)\s*;?\s*$/, '');
+    return JSON.parse(cleaned);
+  };
+
+  // Prefer POST (avoids the proxy/url length limits that cause 413).
+  if (wantsPost) {
+    try {
+      const body = new URLSearchParams({ ...params, callback: 'cb', _ts: ts }).toString();
+      const r = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body
+      });
+      const text = await r.text();
+      return parseText(text);
+    } catch (err) {
+      console.warn('api POST failed, falling back to GET+proxy:', err);
+      // Fall through to GET+proxy.
+    }
+  }
+
+  // GET+proxy for reads (and for fallback).
+  const url = API + '?' + new URLSearchParams({ ...params, callback: 'cb', _ts: ts });
   const proxy = 'https://corsproxy.io/?' + encodeURIComponent(url);
   const r = await fetch(proxy);
   const text = await r.text();
-  let cleaned = text.trim();
-  cleaned = cleaned.replace(/^cb\(/, '').replace(/\)\s*;?\s*$/, '');
   try {
-    return JSON.parse(cleaned);
+    return parseText(text);
   } catch (err) {
-    throw new Error('Bad API response (first 300 chars): ' + text.trim().slice(0, 300));
+    throw new Error('Bad API response (first 300 chars): ' + String(text || '').trim().slice(0, 300));
   }
 }
 
