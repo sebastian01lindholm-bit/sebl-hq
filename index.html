@@ -284,8 +284,10 @@ kbd{background:var(--surface);border:1px solid var(--border);border-radius:3px;p
     <div class="h-mark"><div class="h-dot"></div>Seb-L HQ</div>
     <span class="h-sep">/</span>
     <div class="h-date" id="headerDate"></div>
-    <div class="h-right">
+    <div class="h-right" style="display:flex;align-items:center;gap:8px">
       <button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="exportData()">exportera</button>
+      <button class="btn btn-ghost" id="loginBtn" style="font-size:11px;padding:3px 10px" onclick="openAuthModal()">logga in</button>
+      <button class="btn btn-ghost" id="logoutBtn" style="font-size:11px;padding:3px 10px;display:none" onclick="logout()">logga ut</button>
     </div>
   </header>
 
@@ -516,14 +518,105 @@ kbd{background:var(--surface);border:1px solid var(--border);border-radius:3px;p
   </div>
 </div>
 
+<!-- AUTH MODAL -->
+<div class="modal-backdrop" id="authModal">
+  <div class="modal" style="max-width:380px">
+    <div class="modal-header">
+      <span class="modal-title">Logga in</span>
+      <button class="modal-close" onclick="closeAuthModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <input type="email" class="modal-field" id="authEmail" placeholder="E-post…" onkeydown="if(event.key==='Enter')signIn()">
+      <input type="password" class="modal-field" id="authPw" placeholder="Lösenord…" onkeydown="if(event.key==='Enter')signIn()">
+      <div id="authMsg" style="font-size:12px;color:var(--red);min-height:16px"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeAuthModal()">Avbryt</button>
+      <button class="btn btn-dark" onclick="signIn()">Logga in</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const todayStr = () => new Date().toISOString().split('T')[0];
 
 const API = 'https://script.google.com/macros/s/AKfycbz1gZxIJBOG7zrleat2sR2fgNAxXG0F3ImtKG8Y5j-leF3nR8E6NjRETb7jJDZ8WYmg/exec';
+
+// ── SUPABASE AUTH + CLIENT ─────────────────────────────────────────────
+const SUPABASE_URL  = 'https://ssjipmsnwrdgzydzftox.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNzamlwbXNud3JkZ3p5ZHpmdG94Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4Mjg0ODUsImV4cCI6MjA4OTQwNDQ4NX0.U6390QasWqBlOTlZxH8m-afT46-ql3OupV1V5DcJSi4';
+
+let supabaseClient = null;
+
+function initSupabaseClient() {
+  if (supabaseClient) return supabaseClient;
+  if (!window.supabase || !window.supabase.createClient) return null;
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, {
+    auth: { persistSession: true, autoRefreshToken: true }
+  });
+  return supabaseClient;
+}
+
+async function updateAuthUi() {
+  const loginBtn = $('loginBtn');
+  const logoutBtn = $('logoutBtn');
+  if (!loginBtn || !logoutBtn) return;
+  const client = supabaseClient;
+  if (!client) {
+    loginBtn.style.display = 'inline-flex';
+    logoutBtn.style.display = 'none';
+    return;
+  }
+  const { data: { session } } = await client.auth.getSession();
+  const loggedIn = !!session?.user;
+  loginBtn.style.display = loggedIn ? 'none' : 'inline-flex';
+  logoutBtn.style.display = loggedIn ? 'inline-flex' : 'none';
+}
+
+function openAuthModal() {
+  $('authModal').classList.add('open');
+  setTimeout(() => $('authEmail').focus(), 50);
+}
+
+function closeAuthModal() {
+  $('authModal').classList.remove('open');
+  $('authMsg').textContent = '';
+}
+
+async function signIn() {
+  const email = $('authEmail').value.trim();
+  const pw    = $('authPw').value;
+  $('authMsg').textContent = '';
+  try {
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password: pw });
+    if (error) { $('authMsg').textContent = error.message; return; }
+    closeAuthModal();
+    await updateAuthUi();
+    loadAll();
+  } catch(e) { $('authMsg').textContent = 'Fel: ' + e.message; }
+}
+
+async function logout() {
+  if (!supabaseClient) return;
+  await supabaseClient.auth.signOut();
+  await updateAuthUi();
+}
+
+async function requireSession() {
+  if (!supabaseClient) initSupabaseClient();
+  if (!supabaseClient) return null;
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (!session?.user) {
+    openAuthModal();
+    return null;
+  }
+  return session;
+}
 
 // ── STATE ─────────────────────────────────────────────────────────
 let entries     = []; // jobb entries
@@ -666,43 +759,76 @@ async function api(params) {
 
 // ── LOAD ──────────────────────────────────────────────────────────
 async function loadAll() {
-  // Keep local snapshot so we can merge if the API is incomplete.
+  const client = initSupabaseClient();
+  if (!client) return;
+
+  // Keep local snapshot so we can merge if the network call fails.
   const localEntries = entries;
   const localFritidEntries = fritidEntries;
   const localJournal = journalData;
 
   try {
+    const session = await requireSession();
+    if (!session) return;
+    const userId = session.user.id;
+
     const [e, f, j, mb, mbImg, cs] = await Promise.all([
-      api({ action: 'get', sheet: 'entries' }),
-      api({ action: 'get', sheet: 'fritid' }),
-      api({ action: 'get', sheet: 'journal' }),
-      api({ action: 'get', sheet: 'mb_boards' }),
-      api({ action: 'get', sheet: 'moodboard' }),
-      api({ action: 'get', sheet: 'case_studies' })
+      client
+        .from('entries')
+        .select('id,text,type,tags,created_at,title,image_url,updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      client
+        .from('fritid_entries')
+        .select('id,text,type,tags,created_at,title,image_url,updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      client
+        .from('journal')
+        .select('date,text')
+        .eq('user_id', userId),
+      client
+        .from('moodboard_boards')
+        .select('id,name,created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      client
+        .from('moodboard_images')
+        .select('id,board_id,image_data,caption,created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      client
+        .from('case_studies')
+        .select('id,title,notes,image_data,created_at,updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
     ]);
 
-    const apiEntries = parseSheet(e.data, ['id','text','type','tags','created_at','title','image_url']);
-    apiEntries.forEach(e => { try { e.tags = JSON.parse(e.tags||'[]'); } catch(x){ e.tags=[]; } });
+    if (e.error) throw e.error;
+    if (f.error) throw f.error;
+    if (j.error) throw j.error;
+    if (mb.error) throw mb.error;
+    if (mbImg.error) throw mbImg.error;
+    if (cs.error) throw cs.error;
 
-    const apiFritidEntries = parseSheet(f.data, ['id','text','type','tags','created_at','title','image_url']);
-    apiFritidEntries.forEach(e => { try { e.tags = JSON.parse(e.tags||'[]'); } catch(x){ e.tags=[]; } });
-
-    const apiJournal = {};
-    parseSheet(j.data, ['id','date','text']).forEach(r => { apiJournal[r.date] = r.text; });
-
+    const apiEntries = normalizeEntries(e.data);
+    const apiFritidEntries = normalizeEntries(f.data);
     entries = mergeById(apiEntries, localEntries);
     fritidEntries = mergeById(apiFritidEntries, localFritidEntries);
+
+    const apiJournal = {};
+    (j.data || []).forEach(r => { apiJournal[r.date] = r.text; });
     journalData = { ...localJournal, ...apiJournal };
 
-    // Other sections are still fully API-driven for now.
-    moodboard = parseSheet(mb.data, ['id','name','image_data','created_at']);
-    mbImages  = parseSheet(mbImg.data, ['id','board_id','image_data','caption','created_at']);
-    caseStudies = parseSheet(cs.data, ['id','title','notes','image_data','created_at']);
+    moodboard = (mb.data || []).map(b => ({ ...b, image_data: b.image_data || '' }));
+    mbImages = (mbImg.data || []).map(i => ({ ...i, caption: i.caption || '' }));
+    caseStudies = (cs.data || []).map(c => ({ ...c, notes: c.notes || '' }));
 
     renderAll();
     updateCounts();
     persistToLocal();
-  } catch(err) {
+    updateAuthUi();
+  } catch (err) {
     console.error('loadAll:', err);
     toast('Fel vid laddning: ' + err.message);
   }
@@ -725,7 +851,7 @@ async function saveEntry(section) {
   const imgEl   = isF ? 'fritidImgUrl' : 'dumpImgUrl';
   const tagEl   = isF ? 'fritidTagInput' : 'tagInput';
   const btnEl   = isF ? 'fritidSaveBtn' : 'saveBtn';
-  const sheet   = isF ? 'fritid' : 'entries';
+  const table   = isF ? 'fritid_entries' : 'entries';
   const type    = isF ? fritidType : currentType;
 
   const text = $(textEl).value.trim();
@@ -743,9 +869,21 @@ async function saveEntry(section) {
   const btn = $(btnEl); btn.disabled = true; btn.textContent = '…';
   let apiOk = false;
   try {
-    const row = JSON.stringify([id, text, type, JSON.stringify(tags), created_at, title, imgUrl]);
-    await api({ action: 'insert', sheet, row });
-    apiOk = true;
+    const session = await requireSession();
+    if (session) {
+      await supabaseClient.from(table).insert({
+        id,
+        user_id: session.user.id,
+        text,
+        type,
+        tags,
+        created_at,
+        updated_at: created_at,
+        title,
+        image_url: imgUrl
+      });
+      apiOk = true;
+    }
   } catch(err) {
     console.warn('saveEntry sync failed:', err);
     toast('Sparat lokalt, men synk fel: ' + err.message);
@@ -767,29 +905,52 @@ async function saveEntry(section) {
 
 async function deleteEntry(id, sheet) {
   if (!confirm('Radera?')) return;
+  const isF = sheet === 'fritid';
+  const table = isF ? 'fritid_entries' : 'entries';
+
+  // Optimistic local delete.
+  const src = isF ? fritidEntries : entries;
+  const before = src.find(e => e.id == id);
+  if (!before) return;
+  if (isF) fritidEntries = fritidEntries.filter(e => e.id !== id);
+  else entries = entries.filter(e => e.id !== id);
+  persistToLocal();
+  renderAll(); updateCounts(); toast('Borttagen');
+
   try {
-    await api({ action: 'delete', sheet, id });
-    if (sheet === 'fritid') fritidEntries = fritidEntries.filter(e => e.id !== id);
-    else entries = entries.filter(e => e.id !== id);
+    const session = await requireSession();
+    if (!session) return;
+    await supabaseClient.from(table).delete().eq('id', id);
+  } catch(err) {
+    console.warn('deleteEntry sync failed:', err);
+    toast('Fel: ' + err.message);
+    // Revert optimistic delete if server delete failed.
+    if (isF) fritidEntries.unshift(before);
+    else entries.unshift(before);
     persistToLocal();
-    renderAll(); updateCounts(); toast('Borttagen');
-  } catch(err) { toast('Fel: ' + err.message); }
+    renderAll(); updateCounts();
+  }
 }
 
 // ── JOURNAL ───────────────────────────────────────────────────────
 async function saveJournal() {
   const text = $('journalText').value.trim(); if (!text) return;
   try {
-    if (journalData[curJDate] !== undefined) {
-      const r = await api({ action: 'get', sheet: 'journal' });
-      const rows = r.data || [];
-      for (let i = 1; i < rows.length; i++) {
-        if (rows[i][1] === curJDate) { await api({ action: 'update', sheet: 'journal', id: rows[i][0], col: 3, val: text }); break; }
-      }
-    } else {
-      await api({ action: 'insert', sheet: 'journal', row: JSON.stringify([Date.now().toString(), curJDate, text]) });
-    }
-    journalData[curJDate] = text; updateCounts(); toast('Journal sparad ✓');
+    const session = await requireSession();
+    if (!session) return;
+    const nowIso = new Date().toISOString();
+    const { error } = await supabaseClient
+      .from('journal')
+      .upsert(
+        { user_id: session.user.id, date: curJDate, text, created_at: nowIso, updated_at: nowIso },
+        { onConflict: 'user_id,date' }
+      );
+    if (error) throw error;
+
+    journalData[curJDate] = text;
+    updateCounts();
+    persistToLocal();
+    toast('Journal sparad ✓');
   } catch(err) { toast('Fel: ' + err.message); }
 }
 
@@ -1192,10 +1353,12 @@ document.addEventListener('keydown', e => {
 });
 
 updateDate();
+initSupabaseClient();
 loadFromLocal();
 renderAll();
 updateCounts();
 loadAll();
+updateAuthUi();
 </script>
 </body>
 </html>
