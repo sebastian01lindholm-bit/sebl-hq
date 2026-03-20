@@ -522,20 +522,17 @@ kbd{background:var(--surface);border:1px solid var(--border);border-radius:3px;p
 <div class="modal-backdrop" id="authModal">
   <div class="modal" style="max-width:380px">
     <div class="modal-header">
-      <span class="modal-title" id="authModalTitle">Logga in</span>
+      <span class="modal-title">Logga in</span>
       <button class="modal-close" onclick="closeAuthModal()">×</button>
     </div>
     <div class="modal-body">
-      <input type="email" class="modal-field" id="authEmail" placeholder="E-post…">
-      <input type="password" class="modal-field" id="authPw" placeholder="Lösenord…">
+      <input type="email" class="modal-field" id="authEmail" placeholder="E-post…" onkeydown="if(event.key==='Enter')signIn()">
+      <input type="password" class="modal-field" id="authPw" placeholder="Lösenord…" onkeydown="if(event.key==='Enter')signIn()">
       <div id="authMsg" style="font-size:12px;color:var(--red);min-height:16px"></div>
-      <div style="font-size:12px;color:var(--text-muted);text-align:center">
-        Inget konto? <span onclick="toggleAuthMode()" style="color:var(--text);cursor:pointer;text-decoration:underline;text-underline-offset:2px" id="authToggleLink">Skapa ett</span>
-      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeAuthModal()">Avbryt</button>
-      <button class="btn btn-dark" id="authSubmitBtn" onclick="submitAuth()">Logga in</button>
+      <button class="btn btn-dark" onclick="signIn()">Logga in</button>
     </div>
   </div>
 </div>
@@ -551,8 +548,8 @@ const todayStr = () => new Date().toISOString().split('T')[0];
 const API = 'https://script.google.com/macros/s/AKfycbz1gZxIJBOG7zrleat2sR2fgNAxXG0F3ImtKG8Y5j-leF3nR8E6NjRETb7jJDZ8WYmg/exec';
 
 // ── SUPABASE AUTH + CLIENT ─────────────────────────────────────────────
-const SUPABASE_URL  = 'https://entyrvebideckywzqzom.supabase.co';
-const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVudHlydmViaWRlY3h5d3pxem9tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMDU4NDAsImV4cCI6MjA4OTU4MTg0MH0.bSAY0Z4bNrPAwhQGnbDoABUUO6Eye3OOehTg2WrPMLg';
+const SUPABASE_URL  = 'https://ssjipmsnwrdgzydzftox.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNzamlwbXNud3JkZ3p5ZHpmdG94Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4Mjg0ODUsImV4cCI6MjA4OTQwNDQ4NX0.U6390QasWqBlOTlZxH8m-afT46-ql3OupV1V5DcJSi4';
 
 let supabaseClient = null;
 
